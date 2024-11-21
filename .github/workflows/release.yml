@@ -30,6 +30,8 @@ jobs:
           echo "commit=${COMMIT}" >> $GITHUB_OUTPUT
           echo "version=${VERSION}" >> $GITHUB_OUTPUT
         id: info
+      - name: Install unbound
+        run: sudo apt-get install -y libunbound-dev
       - name: Build release binary
         run: make -f Makefile.release release
       - name: Build release binary sha256
