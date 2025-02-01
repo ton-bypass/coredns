@@ -13,6 +13,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/config v1.28.5
 	github.com/aws/aws-sdk-go-v2/service/secretsmanager v1.34.5
 	github.com/coredns/caddy v1.1.2-0.20241029205200-8de985351a98
+	github.com/coredns/unbound v0.0.7
 	github.com/dnstap/golang-dnstap v0.4.0
 	github.com/expr-lang/expr v1.16.9
 	github.com/farsightsec/golang-framestream v0.3.0
@@ -114,6 +115,7 @@ require (
 	github.com/json-iterator/go v1.1.12 // indirect
 	github.com/klauspost/compress v1.17.9 // indirect
 	github.com/mailru/easyjson v0.7.7 // indirect
+	github.com/miekg/unbound v0.0.0-20240613151107-1f0f3b231f04 // indirect
 	github.com/mitchellh/go-homedir v1.1.0 // indirect
 	github.com/mitchellh/mapstructure v1.5.0 // indirect
 	github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd // indirect
