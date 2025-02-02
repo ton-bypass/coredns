@@ -16,6 +16,7 @@ RUN setcap cap_net_bind_service=+ep /coredns
 
 FROM --platform=$TARGETPLATFORM ${BASE}
 COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
+COPY --from=build /usr/lib/x86_64-linux-gnu /usr/lib/
 COPY --from=build /coredns /coredns
 USER nonroot:nonroot
 WORKDIR /
