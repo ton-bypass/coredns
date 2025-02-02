@@ -13,6 +13,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/config v1.28.5
 	github.com/aws/aws-sdk-go-v2/service/secretsmanager v1.34.5
 	github.com/coredns/caddy v1.1.2-0.20241029205200-8de985351a98
+	github.com/coredns/unbound v0.0.7
 	github.com/dnstap/golang-dnstap v0.4.0
 	github.com/expr-lang/expr v1.16.9
 	github.com/farsightsec/golang-framestream v0.3.0
@@ -77,7 +78,6 @@ require (
 	github.com/aws/smithy-go v1.22.1 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
-	github.com/coredns/unbound v0.0.7 // indirect
 	github.com/coreos/go-semver v0.3.0 // indirect
 	github.com/coreos/go-systemd/v22 v22.3.2 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
