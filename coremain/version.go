@@ -2,7 +2,7 @@ package coremain
 
 // Various CoreDNS constants.
 const (
-	CoreVersion = "25.02.2"
+	CoreVersion = "1.12.0"
 	CoreName    = "CoreDNS"
 	serverType  = "dns"
 )
