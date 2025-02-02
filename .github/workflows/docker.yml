@@ -1,13 +1,10 @@
 name: Docker Release
 
 on:
-  release:
-    types: [published]
   workflow_dispatch:
-    inputs:
-      release:
-        description: "Release (e.g., v1.9.0)"
-        required: true
+  push:
+    branches:
+      - 'master'
 
 permissions:
   contents: read
