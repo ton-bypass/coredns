@@ -32,8 +32,6 @@ jobs:
         id: info
       - name: Install unbound
         run: sudo apt-get install -y libunbound-dev
-      - name: Go modules
-        run: go mod tidy && go get -u
       - name: Build release binary
         run: make -f Makefile.release release
       - name: Build release binary sha256
