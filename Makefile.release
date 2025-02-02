@@ -65,6 +65,7 @@ release: build tar
 .PHONY: build
 build:
 	@go version
+	@go get github.com/coredns/unbound
 	@echo Cleaning old builds
 	@rm -rf build && mkdir build
 	@echo Building: darwin/amd64 - $(VERSION)
