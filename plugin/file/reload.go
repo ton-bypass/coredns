@@ -36,13 +36,9 @@ func (z *Zone) Reload(t *transfer.Transfer) error {
 					continue
 				}
 
-				// copy elements we need
-				z.Lock()
-				z.Apex = zone.Apex
-				z.Tree = zone.Tree
-				z.Unlock()
+				z.setData(zone.Apex, zone.Tree)
 
-				log.Infof("Successfully reloaded zone %q in %q with %d SOA serial", z.origin, zFile, z.Apex.SOA.Serial)
+				log.Infof("Successfully reloaded zone %q in %q with %d SOA serial", z.origin, zFile, zone.SOA.Serial)
 				if t != nil {
 					if err := t.Notify(z.origin); err != nil {
 						log.Warningf("Failed sending notifies: %s", err)
@@ -62,8 +58,8 @@ func (z *Zone) Reload(t *transfer.Transfer) error {
 func (z *Zone) SOASerialIfDefined() int64 {
 	z.RLock()
 	defer z.RUnlock()
-	if z.Apex.SOA != nil {
-		return int64(z.Apex.SOA.Serial)
+	if z.SOA != nil {
+		return int64(z.SOA.Serial)
 	}
 	return -1
 }

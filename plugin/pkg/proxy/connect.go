@@ -1,7 +1,6 @@
-// Package proxy implements a forwarding proxy. It caches an upstream net.Conn for some time, so if the same
-// client returns the upstream's Conn will be precached. Depending on how you benchmark this looks to be
-// 50% faster than just opening a new connection for every client. It works with UDP and TCP and uses
-// inband healthchecking.
+// Package proxy implements a forwarding proxy with connection caching.
+// It manages a pool of upstream connections (UDP and TCP) to reuse them for subsequent requests,
+// reducing latency and handshake overhead. It supports in-band health checking.
 package proxy
 
 import (
@@ -16,6 +15,10 @@ import (
 	"github.com/coredns/coredns/request"
 
 	"github.com/miekg/dns"
+)
+
+const (
+	ErrTransportStopped = "proxy: transport stopped"
 )
 
 // limitTimeout is a utility function to auto-tune timeout values
@@ -52,13 +55,39 @@ func (t *Transport) Dial(proto string) (*persistConn, bool, error) {
 		proto = "tcp-tls"
 	}
 
-	t.dial <- proto
-	pc := <-t.ret
+	// Check if transport is stopped before attempting to dial
+	select {
+	case <-t.stop:
+		return nil, false, errors.New(ErrTransportStopped)
+	default:
+	}
 
-	if pc != nil {
+	transtype := stringToTransportType(proto)
+
+	t.mu.Lock()
+	// Pre-compute max-age deadline outside the loop to avoid repeated time.Now() calls.
+	var maxAgeDeadline time.Time
+	if t.maxAge > 0 {
+		maxAgeDeadline = time.Now().Add(-t.maxAge)
+	}
+	// FIFO: take the oldest conn (front of slice) for source port diversity
+	for len(t.conns[transtype]) > 0 {
+		pc := t.conns[transtype][0]
+		t.conns[transtype] = t.conns[transtype][1:]
+		if time.Since(pc.used) > t.expire {
+			pc.c.Close()
+			continue
+		}
+		if !maxAgeDeadline.IsZero() && pc.created.Before(maxAgeDeadline) {
+			pc.c.Close()
+			continue
+		}
+		t.mu.Unlock()
 		connCacheHitsCount.WithLabelValues(t.proxyName, t.addr, proto).Add(1)
 		return pc, true, nil
 	}
+	t.mu.Unlock()
+
 	connCacheMissesCount.WithLabelValues(t.proxyName, t.addr, proto).Add(1)
 
 	reqTime := time.Now()
@@ -66,18 +95,18 @@ func (t *Transport) Dial(proto string) (*persistConn, bool, error) {
 	if proto == "tcp-tls" {
 		conn, err := dns.DialTimeoutWithTLS("tcp", t.addr, t.tlsConfig, timeout)
 		t.updateDialTimeout(time.Since(reqTime))
-		return &persistConn{c: conn}, false, err
+		return &persistConn{c: conn, created: time.Now()}, false, err
 	}
 	conn, err := dns.DialTimeout(proto, t.addr, timeout)
 	t.updateDialTimeout(time.Since(reqTime))
-	return &persistConn{c: conn}, false, err
+	return &persistConn{c: conn, created: time.Now()}, false, err
 }
 
 // Connect selects an upstream, sends the request and waits for a response.
-func (p *Proxy) Connect(ctx context.Context, state request.Request, opts Options) (*dns.Msg, error) {
+func (p *Proxy) Connect(_ctx context.Context, state request.Request, opts Options) (*dns.Msg, error) {
 	start := time.Now()
 
-	proto := ""
+	var proto string
 	switch {
 	case opts.ForceTCP: // TCP flag has precedence over UDP flag
 		proto = "tcp"
@@ -93,10 +122,7 @@ func (p *Proxy) Connect(ctx context.Context, state request.Request, opts Options
 	}
 
 	// Set buffer size correctly for this client.
-	pc.c.UDPSize = uint16(state.Size())
-	if pc.c.UDPSize < 512 {
-		pc.c.UDPSize = 512
-	}
+	pc.c.UDPSize = max(uint16(state.Size()), 512) // #nosec G115 -- UDP size fits in uint16
 
 	pc.c.SetWriteDeadline(time.Now().Add(maxTimeout))
 	// records the origin Id before upstream.

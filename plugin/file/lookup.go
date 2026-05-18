@@ -37,10 +37,7 @@ func (z *Zone) Lookup(ctx context.Context, state request.Request, qname string) 
 	// If z is a secondary zone we might not have transferred it, meaning we have
 	// all zone context setup, except the actual record. This means (for one thing) the apex
 	// is empty and we don't have a SOA record.
-	z.RLock()
-	ap := z.Apex
-	tr := z.Tree
-	z.RUnlock()
+	ap, tr := z.snapshot()
 	if ap.SOA == nil {
 		return nil, nil, nil, ServerFailure
 	}
@@ -330,11 +327,11 @@ func (z *Zone) externalLookup(ctx context.Context, state request.Request, elem *
 	}
 
 	targetName := rrs[0].(*dns.CNAME).Target
-	elem, _ = z.Tree.Search(targetName)
-	if elem == nil {
+	elem, _ = z.Search(targetName)
+	if elem == nil || (qtype == dns.TypeNS || qtype == dns.TypeSOA && targetName == z.origin) {
 		lookupRRs, result := z.doLookup(ctx, state, targetName, qtype)
 		rrs = append(rrs, lookupRRs...)
-		return rrs, z.Apex.ns(do), nil, result
+		return rrs, z.ns(do), nil, result
 	}
 
 	i := 0
@@ -350,16 +347,16 @@ Redo:
 			rrs = append(rrs, sigs...)
 		}
 		targetName := cname[0].(*dns.CNAME).Target
-		elem, _ = z.Tree.Search(targetName)
-		if elem == nil {
+		elem, _ = z.Search(targetName)
+		if elem == nil || (qtype == dns.TypeNS || qtype == dns.TypeSOA && targetName == z.origin) {
 			lookupRRs, result := z.doLookup(ctx, state, targetName, qtype)
 			rrs = append(rrs, lookupRRs...)
-			return rrs, z.Apex.ns(do), nil, result
+			return rrs, z.ns(do), nil, result
 		}
 
 		i++
 		if i > 8 {
-			return rrs, z.Apex.ns(do), nil, Success
+			return rrs, z.ns(do), nil, Success
 		}
 
 		goto Redo
@@ -376,7 +373,7 @@ Redo:
 		}
 	}
 
-	return rrs, z.Apex.ns(do), nil, Success
+	return rrs, z.ns(do), nil, Success
 }
 
 func (z *Zone) doLookup(ctx context.Context, state request.Request, target string, qtype uint16) ([]dns.RR, Result) {
@@ -409,12 +406,16 @@ func (z *Zone) additionalProcessing(answer []dns.RR, do bool) (extra []dns.RR) {
 			name = x.Target
 		case *dns.MX:
 			name = x.Mx
+		case *dns.SVCB:
+			name = x.Target
+		case *dns.HTTPS:
+			name = x.Target
 		}
 		if len(name) == 0 || !dns.IsSubDomain(z.origin, name) {
 			continue
 		}
 
-		elem, _ := z.Tree.Search(name)
+		elem, _ := z.Search(name)
 		if elem == nil {
 			continue
 		}

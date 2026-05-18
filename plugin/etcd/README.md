@@ -55,6 +55,8 @@ etcd [ZONES...] {
     * three arguments - path to cert PEM file, path to client private key PEM file, path to CA PEM
       file - if the server certificate is not signed by a system-installed CA and client certificate
       is needed.
+* `min-lease-ttl` the minimum TTL for DNS records based on etcd lease duration. Accepts flexible time formats like '30', '30s', '5m', '1h', '2h30m'. Default: 30 seconds.
+* `max-lease-ttl` the maximum TTL for DNS records based on etcd lease duration. Accepts flexible time formats like '30', '30s', '5m', '1h', '2h30m'. Default: 24 hours.
 
 ## Special Behaviour
 
@@ -83,6 +85,8 @@ skydns.local {
     etcd {
         path /skydns
         endpoint http://localhost:2379
+        min-lease-ttl 60     # minimum 1 minute for lease-based records
+        max-lease-ttl 1h     # maximum 1 hour for lease-based records
     }
     prometheus
     cache
@@ -127,7 +131,7 @@ If you prefer, you can use `curl` to populate the `etcd` server, but with `curl`
 endpoint URL depends on the version of `etcd`. For instance, `etcd v3.2` or before uses only
 [CLIENT-URL]/v3alpha/* while `etcd v3.5` or later uses [CLIENT-URL]/v3/* . Also, Key and Value must
 be base64 encoded in the JSON payload. With `etcdctl` these details are automatically taken care
-of. You can check [this document](https://github.com/coreos/etcd/blob/master/Documentation/dev-guide/api_grpc_gateway.md#notes)
+of. You can check [this document](https://github.com/etcd-io/website/blob/main/content/en/docs/v3.2/dev-guide/api_grpc_gateway.md)
 for details.
 
 ### Reverse zones

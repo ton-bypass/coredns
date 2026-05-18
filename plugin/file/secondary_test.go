@@ -84,7 +84,7 @@ func TestShouldTransfer(t *testing.T) {
 		t.Fatalf("ShouldTransfer should return true for serial: %d", soa.serial)
 	}
 	// Serial smaller
-	z.Apex.SOA = test.SOA(fmt.Sprintf("%s IN SOA bla. bla. %d 0 0 0 0 ", testZone, soa.serial-1))
+	z.SOA = test.SOA(fmt.Sprintf("%s IN SOA bla. bla. %d 0 0 0 0 ", testZone, soa.serial-1))
 	should, err = z.shouldTransfer()
 	if err != nil {
 		t.Fatalf("Unable to run shouldTransfer: %v", err)
@@ -93,7 +93,7 @@ func TestShouldTransfer(t *testing.T) {
 		t.Fatalf("ShouldTransfer should return true for serial: %q", soa.serial-1)
 	}
 	// Serial equal
-	z.Apex.SOA = test.SOA(fmt.Sprintf("%s IN SOA bla. bla. %d 0 0 0 0 ", testZone, soa.serial))
+	z.SOA = test.SOA(fmt.Sprintf("%s IN SOA bla. bla. %d 0 0 0 0 ", testZone, soa.serial))
 	should, err = z.shouldTransfer()
 	if err != nil {
 		t.Fatalf("Unable to run shouldTransfer: %v", err)
@@ -113,10 +113,10 @@ func TestTransferIn(t *testing.T) {
 	z.origin = testZone
 	z.TransferFrom = []string{s.Addr}
 
-	if err := z.TransferIn(); err != nil {
+	if err := z.TransferIn(nil); err != nil {
 		t.Fatalf("Unable to run TransferIn: %v", err)
 	}
-	if z.Apex.SOA.String() != fmt.Sprintf("%s	3600	IN	SOA	bla. bla. 250 0 0 0 0", testZone) {
+	if z.SOA.String() != fmt.Sprintf("%s	3600	IN	SOA	bla. bla. 250 0 0 0 0", testZone) {
 		t.Fatalf("Unknown SOA transferred")
 	}
 }
@@ -138,7 +138,7 @@ func TestIsNotify(t *testing.T) {
 	}
 }
 
-func newRequest(zone string, qtype uint16) request.Request {
+func newRequest(_zone string, _qtype uint16) request.Request {
 	m := new(dns.Msg)
 	m.SetQuestion("example.com.", dns.TypeA)
 	m.SetEdns0(4097, true)

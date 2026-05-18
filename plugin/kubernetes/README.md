@@ -34,6 +34,9 @@ kubernetes [ZONES...] {
     endpoint URL
     tls CERT KEY CACERT
     kubeconfig KUBECONFIG [CONTEXT]
+    apiserver_qps QPS
+    apiserver_burst BURST
+    apiserver_max_inflight MAX
     namespaces NAMESPACE...
     labels EXPRESSION
     pods POD-MODE
@@ -42,27 +45,36 @@ kubernetes [ZONES...] {
     noendpoints
     fallthrough [ZONES...]
     ignore empty_service
+    multicluster [ZONES...]
+    startup_timeout DURATION
 }
 ```
 
 * `endpoint` specifies the **URL** for a remote k8s API endpoint.
-   If omitted, it will connect to k8s in-cluster using the cluster service account.
+   If omitted, it will connect to k8s in-cluster using the cluster service account. Needs `tls` for clusters with authentication.
+   This option is ignored if `kubeconfig` is set.
 * `tls` **CERT** **KEY** **CACERT** are the TLS cert, key and the CA cert file names for remote k8s connection.
    This option is ignored if connecting in-cluster (i.e. endpoint is not specified).
 * `kubeconfig` **KUBECONFIG [CONTEXT]** authenticates the connection to a remote k8s cluster using a kubeconfig file.
    **[CONTEXT]** is optional, if not set, then the current context specified in kubeconfig will be used.
    It supports TLS, username and password, or token-based authentication.
-   This option is ignored if connecting in-cluster (i.e., the endpoint is not specified).
+   This option is ignored if omitted. The cluster address in the `kubeconfig` is given preference.
+* `apiserver_qps` **QPS** sets the maximum queries per second (QPS) rate limit for requests.
+   This allows you to control the rate at which the plugin sends requests to the API server to prevent overwhelming it.
+* `apiserver_burst` **BURST** sets the maximum burst size for requests.
+   This allows temporary spikes in request rate up to this value, even if it exceeds the QPS limit.
+* `apiserver_max_inflight` **MAX** sets the maximum number of concurrent in-flight requests.
+   This caps the total number of simultaneous requests the plugin can make to the API server.
 * `namespaces` **NAMESPACE [NAMESPACE...]** only exposes the k8s namespaces listed.
    If this option is omitted all namespaces are exposed
 * `namespace_labels` **EXPRESSION** only expose the records for Kubernetes namespaces that match this label selector.
    The label selector syntax is described in the
-   [Kubernetes User Guide - Labels](https://kubernetes.io/docs/user-guide/labels/). An example that
+   [Kubernetes Documentation - Labels and Selectors](https://kubernetes.io/docs/concepts/overview/working-with-objects/labels/). An example that
    only exposes namespaces labeled as "istio-injection=enabled", would use:
    `labels istio-injection=enabled`.
 * `labels` **EXPRESSION** only exposes the records for Kubernetes objects that match this label selector.
    The label selector syntax is described in the
-   [Kubernetes User Guide - Labels](https://kubernetes.io/docs/user-guide/labels/). An example that
+   [Kubernetes Documentation - Labels and Selectors](https://kubernetes.io/docs/concepts/overview/working-with-objects/labels/). An example that
    only exposes objects labeled as "application=nginx" in the "staging" or "qa" environments, would
    use: `labels environment in (staging, qa),application=nginx`.
 * `pods` **POD-MODE** sets the mode for handling IP-based pod A records, e.g.
@@ -101,6 +113,12 @@ kubernetes [ZONES...] {
 * `ignore empty_service` returns NXDOMAIN for services without any ready endpoint addresses (e.g., ready pods).
   This allows the querying pod to continue searching for the service in the search path.
   The search path could, for example, include another Kubernetes cluster.
+* `multicluster` defines the multicluster zones as defined by Multi-Cluster
+  Services API (MCS-API). Specifying this option is generally paired with the
+  installation of an MCS-API implementation and the ServiceImport and ServiceExport
+  CRDs. The plugin MUST be authoritative for the zones listed here.
+* `startup_timeout` specifies the **DURATION** value that limits the time to wait for informer cache synced
+  when the kubernetes plugin starts. If not specified, the default timeout will be 5s.
 
 Enabling zone transfer is done by using the *transfer* plugin.
 
@@ -110,7 +128,7 @@ When CoreDNS starts with the *kubernetes* plugin enabled, it will delay serving 
 until it can connect to the Kubernetes API and synchronize all object watches.  If this cannot happen within
 5 seconds, then CoreDNS will start serving DNS while the *kubernetes* plugin continues to try to connect
 and synchronize all object watches.  CoreDNS will answer SERVFAIL to any request made for a Kubernetes record
-that has not yet been synchronized.
+that has not yet been synchronized. You can also determine how long to wait by specifying `startup_timeout`.
 
 ## Monitoring Kubernetes Endpoints
 
@@ -120,6 +138,11 @@ The *kubernetes* plugin watches Endpoints via the `discovery.EndpointSlices` API
 
 This plugin reports readiness to the ready plugin. This will happen after it has synced to the
 Kubernetes API.
+
+## PTR Records
+
+This plugin creates PTR records for every Pod selected by a Service. If a given Pod is selected by more than
+one Service a separate PTR record will exist for each Service selecting it.
 
 ## Examples
 
@@ -149,6 +172,14 @@ Connect to Kubernetes with CoreDNS running outside the cluster:
 kubernetes cluster.local {
     endpoint https://k8s-endpoint:8443
     tls cert key cacert
+}
+~~~
+
+Configure multicluster
+
+~~~ txt
+kubernetes cluster.local clusterset.local {
+    multicluster clusterset.local
 }
 ~~~
 
@@ -236,7 +267,7 @@ The following are client level metrics to monitor apiserver request latency & st
 
 ## Bugs
 
-The duration metric only supports the "headless\_with\_selector" service currently.
+The duration metric does not yet support the `headless_without_selector` service kind.
 
 ## See Also
 
