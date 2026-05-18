@@ -192,11 +192,11 @@ func countRecords(result []dns.RR) (cname int, address int, mx int, sorted bool)
 			state = Any
 		}
 	}
-	return
+	return cname, address, mx, sorted
 }
 
 func handler() plugin.Handler {
-	return plugin.HandlerFunc(func(ctx context.Context, w dns.ResponseWriter, r *dns.Msg) (int, error) {
+	return plugin.HandlerFunc(func(_ctx context.Context, w dns.ResponseWriter, r *dns.Msg) (int, error) {
 		w.WriteMsg(r)
 		return dns.RcodeSuccess, nil
 	})

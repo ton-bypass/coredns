@@ -1,14 +1,19 @@
 package forward
 
 import (
+	"context"
+	"fmt"
 	"os"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/coredns/caddy"
 	"github.com/coredns/coredns/core/dnsserver"
+	"github.com/coredns/coredns/plugin/pkg/dnstest"
 	"github.com/coredns/coredns/plugin/pkg/proxy"
+	"github.com/coredns/coredns/plugin/test"
 
 	"github.com/miekg/dns"
 )
@@ -39,6 +44,7 @@ func TestSetup(t *testing.T) {
 		{"forward 10.9.3.0/18 127.0.0.1", false, "0.9.10.in-addr.arpa.", nil, 2, proxy.Options{HCRecursionDesired: true, HCDomain: "."}, ""},
 		{`forward . ::1
 		forward com ::2`, false, ".", nil, 2, proxy.Options{HCRecursionDesired: true, HCDomain: "."}, "plugin"},
+		{"forward . tls://[2400:3200::1%dns.alidns.com]:853 {\ntls\n}\n", false, ".", nil, 2, proxy.Options{HCRecursionDesired: true, HCDomain: "."}, ""},
 		// negative
 		{"forward . a27.0.0.1", true, "", nil, 0, proxy.Options{HCRecursionDesired: true, HCDomain: "."}, "not an IP"},
 		{"forward . 127.0.0.1 {\nblaatl\n}\n", true, "", nil, 0, proxy.Options{HCRecursionDesired: true, HCDomain: "."}, "unknown property"},
@@ -85,6 +91,38 @@ func TestSetup(t *testing.T) {
 	}
 }
 
+func TestSplitZone(t *testing.T) {
+	tests := []struct {
+		input        string
+		expectedHost string
+		expectedZone string
+	}{
+		{
+			"tls://127.0.0.1%example.net:854", "tls://127.0.0.1:854", "example.net",
+		}, {
+			"tls://127.0.0.1%example.net", "tls://127.0.0.1", "example.net",
+		}, {
+			"tls://127.0.0.1:854", "tls://127.0.0.1:854", "",
+		}, {
+			"dns://127.0.0.1", "dns://127.0.0.1", "",
+		}, {
+			"foo%bar:baz", "foo:baz", "bar",
+		}, {
+			"tls://[::1%example.net]:853", "tls://[::1]:853", "example.net",
+		},
+	}
+	for i, test := range tests {
+		host, zone := splitZone(test.input)
+
+		if host != test.expectedHost {
+			t.Errorf("Test %d: expected host %q, actual: %q", i, test.expectedHost, host)
+		}
+		if zone != test.expectedZone {
+			t.Errorf("Test %d: expected zone %q, actual: %q", i, test.expectedZone, zone)
+		}
+	}
+}
+
 func TestSetupTLS(t *testing.T) {
 	tests := []struct {
 		input              string
@@ -96,6 +134,19 @@ func TestSetupTLS(t *testing.T) {
 		{`forward . tls://127.0.0.1 {
 				tls_servername dns
 			}`, false, "dns", ""},
+		{`forward . tls://127.0.0.1%example.net {
+				tls
+			}`, false, "example.net", ""},
+		{`forward . tls://127.0.0.1%example.net:854 tls://127.0.0.2%example.net tls://fe80::1%example.com {
+				tls
+			}`, false, "example.net", ""},
+		{`forward . tls://127.0.0.1%example.net:854 {
+				tls
+			}`, false, "example.net", ""},
+		// SNI specifications clash test
+		{`forward . tls://127.0.0.1%example.net:854 {
+				tls_servername foo
+			}`, true, "", "both forward ('foo') and proxy level ('example.net') TLS servernames are set for upstream proxy 'tls://127.0.0.1:854'"},
 		{`forward . 127.0.0.1 {
 				tls_servername dns
 			}`, false, "", ""},
@@ -103,12 +154,18 @@ func TestSetupTLS(t *testing.T) {
 				tls
 			}`, false, "", ""},
 		{`forward . tls://127.0.0.1`, false, "", ""},
+		{`forward . tls://[2400:3200::1%dns.alidns.com]:853 {
+				tls
+			}`, false, "dns.alidns.com", ""},
+		{`forward . tls://[2400:3200::1]:853 {
+				tls
+				tls_servername dns.alidns.com
+			}`, false, "dns.alidns.com", ""},
 	}
 
 	for i, test := range tests {
 		c := caddy.NewTestController("dns", test.input)
 		fs, err := parseForward(c)
-		f := fs[0]
 
 		if test.shouldErr && err == nil {
 			t.Errorf("Test %d: expected error but found %s for input %s", i, err, test.input)
@@ -122,14 +179,48 @@ func TestSetupTLS(t *testing.T) {
 			if !strings.Contains(err.Error(), test.expectedErr) {
 				t.Errorf("Test %d: expected error to contain: %v, found error: %v, input: %s", i, test.expectedErr, err, test.input)
 			}
+			continue
 		}
+		/*
+			if len(fs) == 0 {
+				continue
+			}
+		*/
 
-		if !test.shouldErr && test.expectedServerName != "" && test.expectedServerName != f.tlsConfig.ServerName {
-			t.Errorf("Test %d: expected: %q, actual: %q", i, test.expectedServerName, f.tlsConfig.ServerName)
+		f := fs[0]
+
+		if !test.shouldErr && test.expectedServerName != "" && test.expectedServerName != f.proxies[0].GetTransport().GetTLSConfig().ServerName {
+			t.Errorf("Test %d: expected server name: %q, actual: %q", i, test.expectedServerName, f.proxies[0].GetTransport().GetTLSConfig().ServerName)
 		}
 
 		if !test.shouldErr && test.expectedServerName != "" && test.expectedServerName != f.proxies[0].GetHealthchecker().GetTLSConfig().ServerName {
-			t.Errorf("Test %d: expected: %q, actual: %q", i, test.expectedServerName, f.proxies[0].GetHealthchecker().GetTLSConfig().ServerName)
+			t.Errorf("Test %d: expected server name: %q, actual: %q", i, test.expectedServerName, f.proxies[0].GetHealthchecker().GetTLSConfig().ServerName)
+		}
+	}
+}
+
+func TestSetupTLSclientSessionCacheCount(t *testing.T) {
+	tests := []struct {
+		input string
+	}{
+		{`forward . tls://127.0.0.1%foo tls://127.0.0.2%foo tls://127.0.0.3%foo tls://127.0.0.4%bar tls://127.0.0.5%bar { }`},
+		{`forward . tls://127.0.0.1%foo tls://127.0.0.2%foo tls://127.0.0.3%bar tls://127.0.0.4%bar tls://127.0.0.5%bar { }`},
+	}
+	for i, test := range tests {
+		c := caddy.NewTestController("dns", test.input)
+		fs, err := parseForward(c)
+		if err != nil {
+			t.Errorf("Test %d: expected no error but found one for input %s, got: %v", i, test.input, err)
+		}
+
+		if fs[0].proxies[0].GetTransport().GetTLSConfig() == fs[0].proxies[len(fs[0].proxies)-1].GetTransport().GetTLSConfig() {
+			t.Errorf("Test %d: tlsConfig is the same for both the first and last proxies", i)
+		}
+		if fs[0].proxies[0].GetTransport().GetTLSConfig() != fs[0].proxies[1].GetTransport().GetTLSConfig() {
+			t.Errorf("Test %d: tlsConfig differs for the first two proxies", i)
+		}
+		if fs[0].proxies[len(fs[0].proxies)-1].GetTransport().GetTLSConfig() != fs[0].proxies[len(fs[0].proxies)-2].GetTransport().GetTLSConfig() {
+			t.Errorf("Test %d: tlsConfig differs for the last two proxies", i)
 		}
 	}
 }
@@ -243,6 +334,89 @@ func TestSetupMaxConcurrent(t *testing.T) {
 	}
 }
 
+func TestSetupMaxConnectAttempts(t *testing.T) {
+	tests := []struct {
+		input       string
+		shouldErr   bool
+		expectedVal uint32
+		expectedErr string
+	}{
+
+		{"forward . 127.0.0.1 {\n}\n", false, 0, ""},
+		{"forward . 127.0.0.1 {\nmax_connect_attempts 5\n}\n", false, 5, ""},
+		{"forward . 127.0.0.1 {\nmax_connect_attempts many\n}\n", true, 0, "invalid"},
+		{"forward . 127.0.0.1 {\nmax_connect_attempts -4\n}\n", true, 0, "invalid"},
+	}
+
+	for i, test := range tests {
+		c := caddy.NewTestController("dns", test.input)
+		fs, err := parseForward(c)
+
+		if test.shouldErr && err == nil {
+			t.Errorf("Test %d: expected error but found %s for input %s", i, err, test.input)
+		}
+
+		if err != nil {
+			if !test.shouldErr {
+				t.Errorf("Test %d: expected no error but found one for input %s, got: %v", i, test.input, err)
+			}
+
+			if !strings.Contains(err.Error(), test.expectedErr) {
+				t.Errorf("Test %d: expected error to contain: %v, found error: %v, input: %s", i, test.expectedErr, err, test.input)
+			}
+		}
+
+		if !test.shouldErr {
+			f := fs[0]
+			if f.maxConnectAttempts != test.expectedVal {
+				t.Errorf("Test %d: expected: %d, got: %d", i, test.expectedVal, f.maxConnectAttempts)
+			}
+		}
+	}
+}
+
+func TestSetupMaxIdleConns(t *testing.T) {
+	tests := []struct {
+		input       string
+		shouldErr   bool
+		expectedVal int
+		expectedErr string
+	}{
+		{"forward . 127.0.0.1\n", false, 0, ""},
+		{"forward . 127.0.0.1 {\nmax_idle_conns 10\n}\n", false, 10, ""},
+		{"forward . 127.0.0.1 {\nmax_idle_conns 0\n}\n", false, 0, ""},
+		{"forward . 127.0.0.1 {\nmax_idle_conns many\n}\n", true, 0, "invalid"},
+		{"forward . 127.0.0.1 {\nmax_idle_conns -1\n}\n", true, 0, "negative"},
+	}
+
+	for i, test := range tests {
+		c := caddy.NewTestController("dns", test.input)
+		fs, err := parseForward(c)
+
+		if test.shouldErr && err == nil {
+			t.Errorf("Test %d: expected error but found none for input %s", i, test.input)
+		}
+
+		if err != nil {
+			if !test.shouldErr {
+				t.Errorf("Test %d: expected no error but found one for input %s, got: %v", i, test.input, err)
+			}
+
+			if !strings.Contains(err.Error(), test.expectedErr) {
+				t.Errorf("Test %d: expected error to contain: %v, found error: %v, input: %s", i, test.expectedErr, err, test.input)
+			}
+		}
+
+		if test.shouldErr {
+			continue
+		}
+		f := fs[0]
+		if f.maxIdleConns != test.expectedVal {
+			t.Errorf("Test %d: expected: %d, got: %d", i, test.expectedVal, f.maxIdleConns)
+		}
+	}
+}
+
 func TestSetupHealthCheck(t *testing.T) {
 	tests := []struct {
 		input          string
@@ -310,7 +484,7 @@ func TestMultiForward(t *testing.T) {
 	handlers := dnsserver.GetConfig(c).Handlers()
 	f1, ok := handlers[0].(*Forward)
 	if !ok {
-		t.Fatalf("expected first plugin to be Forward, got %v", reflect.TypeOf(f1.Next))
+		t.Fatalf("expected first plugin to be Forward, got %v", reflect.TypeOf(handlers[0]))
 	}
 
 	if f1.from != "1st.example.org." {
@@ -380,5 +554,231 @@ func TestNextAlternate(t *testing.T) {
 		if err == nil {
 			t.Errorf("Test %d: expected error, got nil", i)
 		}
+	}
+}
+
+func TestFailfastAllUnhealthyUpstreams(t *testing.T) {
+	tests := []struct {
+		input          string
+		expectedRecVal bool
+		expectedErr    string
+	}{
+		// positive
+		{"forward . 127.0.0.1\n", false, ""},
+		{"forward . 127.0.0.1 {\nfailfast_all_unhealthy_upstreams\n}\n", true, ""},
+		// negative
+		{"forward . 127.0.0.1 {\nfailfast_all_unhealthy_upstreams false\n}\n", false, "Wrong argument count"},
+	}
+
+	for i, test := range tests {
+		c := caddy.NewTestController("dns", test.input)
+		fs, err := parseForward(c)
+
+		if err != nil {
+			if test.expectedErr == "" {
+				t.Errorf("Test %d: expected no error but found one for input %s, got: %v", i, test.input, err)
+			}
+			if !strings.Contains(err.Error(), test.expectedErr) {
+				t.Errorf("Test %d: expected error to contain: %v, found error: %v, input: %s", i, test.expectedErr, err, test.input)
+			}
+		} else {
+			if test.expectedErr != "" {
+				t.Errorf("Test %d: expected error but found no error for input %s", i, test.input)
+			}
+		}
+
+		if test.expectedErr != "" {
+			continue
+		}
+
+		f := fs[0]
+		if f.failfastUnhealthyUpstreams != test.expectedRecVal {
+			t.Errorf("Test %d: Expected Rec:%v, got:%v", i, test.expectedRecVal, f.failfastUnhealthyUpstreams)
+		}
+	}
+}
+
+func TestFailover(t *testing.T) {
+	server_fail_s := dnstest.NewMultipleServer(func(w dns.ResponseWriter, r *dns.Msg) {
+		ret := new(dns.Msg)
+		ret.SetRcode(r, dns.RcodeServerFailure)
+		w.WriteMsg(ret)
+	})
+	defer server_fail_s.Close()
+
+	server_refused_s := dnstest.NewMultipleServer(func(w dns.ResponseWriter, r *dns.Msg) {
+		ret := new(dns.Msg)
+		ret.SetRcode(r, dns.RcodeRefused)
+		w.WriteMsg(ret)
+	})
+	defer server_refused_s.Close()
+
+	s := dnstest.NewMultipleServer(func(w dns.ResponseWriter, r *dns.Msg) {
+		ret := new(dns.Msg)
+		ret.SetReply(r)
+		ret.Answer = append(ret.Answer, test.A("example.org. IN A 127.0.0.1"))
+		w.WriteMsg(ret)
+	})
+	defer s.Close()
+
+	tests := []struct {
+		input     string
+		hasRecord bool
+		failMsg   string
+	}{
+		{fmt.Sprintf(
+			`forward . %s %s %s {
+				policy sequential
+				failover ServFail Refused
+				}`, server_fail_s.Addr, server_refused_s.Addr, s.Addr), true, "If failover is set, records should be returned as long as one of the upstreams is work"},
+		{fmt.Sprintf(
+			`forward . %s %s %s {
+				policy sequential
+				}`, server_fail_s.Addr, server_refused_s.Addr, s.Addr), false, "If failover is not set and the first upstream is not work, no records should be returned"},
+		{fmt.Sprintf(
+			`forward . %s %s %s {
+				policy sequential
+				}`, s.Addr, server_fail_s.Addr, server_refused_s.Addr), true, "Although failover is not set, as long as the first upstream is work, there should be has a record return"},
+	}
+
+	for i, testCase := range tests {
+		c := caddy.NewTestController("dns", testCase.input)
+		fs, err := parseForward(c)
+
+		f := fs[0]
+		if err != nil {
+			t.Errorf("Test #%d: Failed to create forwarder: %s", i, err)
+		}
+		f.OnStartup()
+		defer f.OnShutdown()
+
+		// Reduce per-upstream read timeout to make the test fit within the
+		// per-query deadline defaultTimeout of 5 seconds.
+		for _, p := range f.proxies {
+			p.SetReadTimeout(500 * time.Millisecond)
+		}
+
+		m := new(dns.Msg)
+		m.SetQuestion("example.org.", dns.TypeA)
+		rec := dnstest.NewRecorder(&test.ResponseWriter{})
+
+		if _, err := f.ServeDNS(context.TODO(), rec, m); err != nil {
+			t.Fatalf("Test #%d: Expected to receive reply, but didn't", i)
+		}
+
+		if (len(rec.Msg.Answer) > 0) != testCase.hasRecord {
+			t.Errorf("Test #%d: %s: \n %s", i, testCase.failMsg, testCase.input)
+		}
+	}
+}
+
+func TestFailoverValidation(t *testing.T) {
+	cases := []struct {
+		name      string
+		input     string
+		wantError string
+	}{
+		{
+			name: "NoErrorDisallowed",
+			input: `forward . 127.0.0.1 {
+		failover NOERROR
+	}`,
+			wantError: "NoError cannot be used in failover",
+		},
+		{
+			name: "InvalidRcode",
+			input: `forward . 127.0.0.1 {
+		failover NOT_A_VALID_RCODE
+	}`,
+			wantError: "not a valid rcode",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := caddy.NewTestController("dns", tc.input)
+			_, err := parseForward(c)
+			if err == nil {
+				t.Fatalf("expected error for %s, got nil", tc.name)
+			}
+			if !strings.Contains(err.Error(), tc.wantError) {
+				t.Fatalf("expected error to contain %q, got: %v", tc.wantError, err)
+			}
+		})
+	}
+}
+
+func TestSetupMaxAge(t *testing.T) {
+	tests := []struct {
+		name        string
+		input       string
+		shouldErr   bool
+		expectedVal time.Duration
+		expectedErr string
+	}{
+		{
+			name:        "default (no max_age)",
+			input:       "forward . 127.0.0.1\n",
+			expectedVal: 0,
+		},
+		{
+			name:        "valid max_age",
+			input:       "forward . 127.0.0.1 {\nmax_age 30s\n}\n",
+			expectedVal: 30 * time.Second,
+		},
+		{
+			name:        "max_age equal to expire",
+			input:       "forward . 127.0.0.1 {\nexpire 10s\nmax_age 10s\n}\n",
+			expectedVal: 10 * time.Second,
+		},
+		{
+			name:        "max_age zero (unlimited)",
+			input:       "forward . 127.0.0.1 {\nmax_age 0s\n}\n",
+			expectedVal: 0,
+		},
+		{
+			name:        "negative max_age",
+			input:       "forward . 127.0.0.1 {\nmax_age -1s\n}\n",
+			shouldErr:   true,
+			expectedErr: "negative",
+		},
+		{
+			name:        "invalid max_age value",
+			input:       "forward . 127.0.0.1 {\nmax_age invalid\n}\n",
+			shouldErr:   true,
+			expectedErr: "invalid",
+		},
+		{
+			name:        "max_age less than expire",
+			input:       "forward . 127.0.0.1 {\nexpire 30s\nmax_age 10s\n}\n",
+			shouldErr:   true,
+			expectedErr: "max_age",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			c := caddy.NewTestController("dns", test.input)
+			fs, err := parseForward(c)
+
+			if test.shouldErr {
+				if err == nil {
+					t.Errorf("expected error but found none for input %s", test.input)
+					return
+				}
+				if !strings.Contains(err.Error(), test.expectedErr) {
+					t.Errorf("expected error to contain %q, got: %v", test.expectedErr, err)
+				}
+				return
+			}
+
+			if err != nil {
+				t.Errorf("expected no error but found: %v", err)
+				return
+			}
+			if fs[0].maxAge != test.expectedVal {
+				t.Errorf("expected maxAge %v, got %v", test.expectedVal, fs[0].maxAge)
+			}
+		})
 	}
 }

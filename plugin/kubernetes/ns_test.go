@@ -14,15 +14,18 @@ import (
 
 type APIConnTest struct{}
 
-func (APIConnTest) HasSynced() bool                             { return true }
-func (APIConnTest) Run()                                        {}
-func (APIConnTest) Stop() error                                 { return nil }
-func (APIConnTest) PodIndex(string) []*object.Pod               { return nil }
-func (APIConnTest) SvcIndexReverse(string) []*object.Service    { return nil }
-func (APIConnTest) SvcExtIndexReverse(string) []*object.Service { return nil }
-func (APIConnTest) EpIndex(string) []*object.Endpoints          { return nil }
-func (APIConnTest) EndpointsList() []*object.Endpoints          { return nil }
-func (APIConnTest) Modified(bool) int64                         { return 0 }
+func (APIConnTest) HasSynced() bool                                  { return true }
+func (APIConnTest) Run()                                             {}
+func (APIConnTest) Stop() error                                      { return nil }
+func (APIConnTest) PodIndex(string) []*object.Pod                    { return nil }
+func (APIConnTest) SvcIndexReverse(string) []*object.Service         { return nil }
+func (APIConnTest) SvcExtIndexReverse(string) []*object.Service      { return nil }
+func (APIConnTest) ServiceImportList() []*object.ServiceImport       { return nil }
+func (APIConnTest) SvcImportIndex(string) []*object.ServiceImport    { return nil }
+func (APIConnTest) EpIndex(string) []*object.Endpoints               { return nil }
+func (APIConnTest) McEpIndex(string) []*object.MultiClusterEndpoints { return nil }
+func (APIConnTest) EndpointsList() []*object.Endpoints               { return nil }
+func (APIConnTest) Modified(ModifiedMode) int64                      { return 0 }
 
 func (a APIConnTest) SvcIndex(s string) []*object.Service {
 	switch s {
@@ -91,10 +94,11 @@ func (APIConnTest) EpIndexReverse(ip string) []*object.Endpoints {
 	return eps
 }
 
-func (APIConnTest) GetNodeByName(ctx context.Context, name string) (*api.Node, error) {
+func (APIConnTest) GetNodeByName(_ctx context.Context, _name string) (*api.Node, error) {
 	return &api.Node{}, nil
 }
-func (APIConnTest) GetNamespaceByName(name string) (*object.Namespace, error) {
+
+func (APIConnTest) GetNamespaceByName(_name string) (*object.Namespace, error) {
 	return nil, fmt.Errorf("namespace not found")
 }
 

@@ -2,6 +2,7 @@
 package cache
 
 import (
+	"encoding/binary"
 	"hash/fnv"
 	"net"
 	"time"
@@ -24,12 +25,12 @@ type Cache struct {
 	zonesMetricLabel string
 	viewMetricLabel  string
 
-	ncache  *cache.Cache
+	ncache  *cache.Cache[*item]
 	ncap    int
 	nttl    time.Duration
 	minnttl time.Duration
 
-	pcache  *cache.Cache
+	pcache  *cache.Cache[*item]
 	pcap    int
 	pttl    time.Duration
 	minpttl time.Duration
@@ -41,8 +42,9 @@ type Cache struct {
 	percentage int
 
 	// Stale serve
-	staleUpTo   time.Duration
-	verifyStale bool
+	staleUpTo          time.Duration
+	verifyStale        bool
+	verifyStaleTimeout time.Duration // 0 means wait for upstream until its own timeout (current default).
 
 	// Positive/negative zone exceptions
 	pexcept []string
@@ -61,11 +63,11 @@ func New() *Cache {
 	return &Cache{
 		Zones:      []string{"."},
 		pcap:       defaultCap,
-		pcache:     cache.New(defaultCap),
+		pcache:     cache.New[*item](defaultCap),
 		pttl:       maxTTL,
 		minpttl:    minTTL,
 		ncap:       defaultCap,
-		ncache:     cache.New(defaultCap),
+		ncache:     cache.New[*item](defaultCap),
 		nttl:       maxNTTL,
 		minnttl:    minNTTL,
 		failttl:    minNTTL,
@@ -110,20 +112,15 @@ func hash(qname string, qtype uint16, do, cd bool) uint64 {
 		h.Write(zero)
 	}
 
-	h.Write([]byte{byte(qtype >> 8)})
-	h.Write([]byte{byte(qtype)})
+	var qtypeBytes [2]byte
+	binary.BigEndian.PutUint16(qtypeBytes[:], qtype)
+	h.Write(qtypeBytes[:])
 	h.Write([]byte(qname))
 	return h.Sum64()
 }
 
 func computeTTL(msgTTL, minTTL, maxTTL time.Duration) time.Duration {
-	ttl := msgTTL
-	if ttl < minTTL {
-		ttl = minTTL
-	}
-	if ttl > maxTTL {
-		ttl = maxTTL
-	}
+	ttl := min(max(msgTTL, minTTL), maxTTL)
 	return ttl
 }
 
@@ -146,30 +143,26 @@ type ResponseWriter struct {
 	nexcept []string // negative zone exceptions
 }
 
-// newPrefetchResponseWriter returns a Cache ResponseWriter to be used in
-// prefetch requests. It ensures RemoteAddr() can be called even after the
-// original connection has already been closed.
-func newPrefetchResponseWriter(server string, state request.Request, c *Cache) *ResponseWriter {
-	// Resolve the address now, the connection might be already closed when the
-	// actual prefetch request is made.
-	addr := state.W.RemoteAddr()
-	// The protocol of the client triggering a cache prefetch doesn't matter.
-	// The address type is used by request.Proto to determine the response size,
-	// and using TCP ensures the message isn't unnecessarily truncated.
-	if u, ok := addr.(*net.UDPAddr); ok {
-		addr = &net.TCPAddr{IP: u.IP, Port: u.Port, Zone: u.Zone}
-	}
+// prefetchAddr is the synthetic remote address for prefetch requests. There is
+// no client connection, and per request.Proto the address type is what selects
+// the response-size budget; TCP ensures upstream replies aren't truncated.
+var prefetchAddr = &net.TCPAddr{}
 
-	return &ResponseWriter{
-		ResponseWriter: state.W,
-		Cache:          c,
-		state:          state,
-		server:         server,
-		do:             state.Do(),
-		cd:             state.Req.CheckingDisabled,
-		prefetch:       true,
-		remoteAddr:     addr,
+// newPrefetchResponseWriter returns a ResponseWriter for prefetch requests.
+// Prefetch has no client connection: the inner ResponseWriter is nil, WriteMsg
+// short-circuits after caching when w.prefetch is true, and the nil-safe
+// overrides below make the remaining dns.ResponseWriter methods well-defined.
+func newPrefetchResponseWriter(server string, req *dns.Msg, do, cd bool, c *Cache) *ResponseWriter {
+	cw := &ResponseWriter{
+		Cache:      c,
+		server:     server,
+		do:         do,
+		cd:         cd,
+		prefetch:   true,
+		remoteAddr: prefetchAddr,
 	}
+	cw.state = request.Request{Req: req}
+	return cw
 }
 
 // RemoteAddr implements the dns.ResponseWriter interface.
@@ -180,8 +173,49 @@ func (w *ResponseWriter) RemoteAddr() net.Addr {
 	return w.ResponseWriter.RemoteAddr()
 }
 
+// The following overrides make a nil inner ResponseWriter well-defined.
+// Prefetch constructs a ResponseWriter with no client connection; WriteMsg
+// and Write already short-circuit on w.prefetch before delegating, and
+// RemoteAddr uses w.remoteAddr. These cover the rest of the interface.
+
+func (w *ResponseWriter) LocalAddr() net.Addr {
+	if w.ResponseWriter == nil {
+		return prefetchAddr
+	}
+	return w.ResponseWriter.LocalAddr()
+}
+
+func (w *ResponseWriter) Close() error {
+	if w.ResponseWriter == nil {
+		return nil
+	}
+	return w.ResponseWriter.Close()
+}
+
+func (w *ResponseWriter) TsigStatus() error {
+	if w.ResponseWriter == nil {
+		return nil
+	}
+	return w.ResponseWriter.TsigStatus()
+}
+
+func (w *ResponseWriter) TsigTimersOnly(b bool) {
+	if w.ResponseWriter == nil {
+		return
+	}
+	w.ResponseWriter.TsigTimersOnly(b)
+}
+
+func (w *ResponseWriter) Hijack() {
+	if w.ResponseWriter == nil {
+		return
+	}
+	w.ResponseWriter.Hijack()
+}
+
 // WriteMsg implements the dns.ResponseWriter interface.
 func (w *ResponseWriter) WriteMsg(res *dns.Msg) error {
+	res = res.Copy()
 	mt, _ := response.Typify(res, w.now().UTC())
 
 	// key returns empty string for anything we don't want to cache.
@@ -189,12 +223,25 @@ func (w *ResponseWriter) WriteMsg(res *dns.Msg) error {
 
 	msgTTL := dnsutil.MinimalTTL(res, mt)
 	var duration time.Duration
-	if mt == response.NameError || mt == response.NoData {
+	switch mt {
+	case response.NameError, response.NoData:
 		duration = computeTTL(msgTTL, w.minnttl, w.nttl)
-	} else if mt == response.ServerError {
+	case response.ServerError:
 		duration = w.failttl
-	} else {
+	default:
 		duration = computeTTL(msgTTL, w.minpttl, w.pttl)
+	}
+
+	// Apply capped TTL to this reply to avoid jarring TTL experience 1799 -> 8 (e.g.)
+	ttl := uint32(duration.Seconds())
+	res.Answer = filterRRSlice(res.Answer, ttl, false)
+	res.Ns = filterRRSlice(res.Ns, ttl, false)
+	res.Extra = filterRRSlice(res.Extra, ttl, false)
+
+	if !w.do && !w.ad {
+		// unset AD bit if requester is not OK with DNSSEC
+		// But retain AD bit if requester set the AD bit in the request, per RFC6840 5.7-5.8
+		res.AuthenticatedData = false
 	}
 
 	if hasKey && duration > 0 {
@@ -210,18 +257,6 @@ func (w *ResponseWriter) WriteMsg(res *dns.Msg) error {
 
 	if w.prefetch {
 		return nil
-	}
-
-	// Apply capped TTL to this reply to avoid jarring TTL experience 1799 -> 8 (e.g.)
-	ttl := uint32(duration.Seconds())
-	res.Answer = filterRRSlice(res.Answer, ttl, false)
-	res.Ns = filterRRSlice(res.Ns, ttl, false)
-	res.Extra = filterRRSlice(res.Extra, ttl, false)
-
-	if !w.do && !w.ad {
-		// unset AD bit if requester is not OK with DNSSEC
-		// But retain AD bit if requester set the AD bit in the request, per RFC6840 5.7-5.8
-		res.AuthenticatedData = false
 	}
 
 	return w.ResponseWriter.WriteMsg(res)
@@ -306,9 +341,9 @@ func (w *verifyStaleResponseWriter) WriteMsg(res *dns.Msg) error {
 }
 
 const (
-	maxTTL  = dnsutil.MaximumDefaulTTL
+	maxTTL  = dnsutil.MaximumDefaultTTL
 	minTTL  = dnsutil.MinimalDefaultTTL
-	maxNTTL = dnsutil.MaximumDefaulTTL / 2
+	maxNTTL = dnsutil.MaximumDefaultTTL / 2
 	minNTTL = dnsutil.MinimalDefaultTTL
 
 	defaultCap = 10000 // default capacity of the cache.
