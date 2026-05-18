@@ -11,7 +11,7 @@ RUN export DEBCONF_NONINTERACTIVE_SEEN=true \
     apt-get -yyqq upgrade ; \
     apt-get -yyqq install ca-certificates libcap2-bin; \
     apt-get clean
-COPY coredns /coredns
+COPY --chmod=0755 coredns /coredns
 RUN setcap cap_net_bind_service=+ep /coredns
 
 FROM --platform=$TARGETPLATFORM ${BASE}
