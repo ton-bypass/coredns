@@ -17,12 +17,22 @@ jobs:
     runs-on: ubuntu-latest
     env:
       RELEASE: ${{ github.event.inputs.release || github.event.release.tag_name }}
+      DOCKER_IMAGE_NAME: tonbypass/coredns
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
           persist-credentials: false
+      - name: Build CoreDNS binary with custom plugins
+        run: |
+          make coredns
+          ./coredns -plugins | tee plugins.txt
+          grep -qx filter plugins.txt
+          grep -qx blocklist plugins.txt
       - name: Build Docker Images
-        run: make VERSION=${RELEASE:1} DOCKER=tonbypass -f Makefile.docker release
+        run: |
+          VERSION="${RELEASE#v}"
+          docker version
+          DOCKER_BUILDKIT=1 docker build --platform=linux/amd64 -t "${DOCKER_IMAGE_NAME}:amd64-${VERSION}" .
       - name: Show Docker Images
         run: docker images
       - name: Docker login
@@ -31,7 +41,10 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_PASSWORD }}
       - name: Publish Docker Images
-        run: make VERSION=${RELEASE:1} DOCKER=tonbypass -f Makefile.docker docker-push
-        env:
-          DOCKER_LOGIN: ${{ secrets.DOCKERHUB_USERNAME }}
-          DOCKER_PASSWORD: ${{ secrets.DOCKERHUB_PASSWORD }}
+        run: |
+          VERSION="${RELEASE#v}"
+          docker push "${DOCKER_IMAGE_NAME}:amd64-${VERSION}"
+          docker manifest create --amend "${DOCKER_IMAGE_NAME}:${VERSION}" "${DOCKER_IMAGE_NAME}:amd64-${VERSION}"
+          docker manifest create --amend "${DOCKER_IMAGE_NAME}:latest" "${DOCKER_IMAGE_NAME}:amd64-${VERSION}"
+          docker manifest push --purge "${DOCKER_IMAGE_NAME}:${VERSION}"
+          docker manifest push --purge "${DOCKER_IMAGE_NAME}:latest"

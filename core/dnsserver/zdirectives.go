@@ -41,6 +41,8 @@ var Directives = []string{
 	"chaos",
 	"loadbalance",
 	"tsig",
+	"filter",
+	"blocklist",
 	"cache",
 	"rewrite",
 	"acl",
